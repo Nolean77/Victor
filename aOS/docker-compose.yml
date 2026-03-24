@@ -1,0 +1,111 @@
+# aOS Docker Compose Configuration
+# Services: Redis, Mosquitto MQTT, LiteLLM, Mem0, Exo
+
+services:
+  # Redis for message bus and caching
+  redis:
+    image: redis:7-alpine
+    container_name: aos-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Mosquitto MQTT broker for edge telemetry
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: aos-mosquitto
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-logs:/mosquitto/log
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-i", "healthcheck", "-W", "3"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # LiteLLM unified LLM gateway
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: aos-litellm
+    ports:
+      - "4000:4000"
+    environment:
+      - DATABASE_URL=sqlite:///./litellm.db
+      - LITELLM_MASTER_KEY=sk-local
+      - STORE_MODEL_IN_DB=True
+      - DROP_OLD_PARAMS=True
+    volumes:
+      - litellm-data:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Mem0 knowledge graph
+  mem0:
+    image: mem0ai/mem0:latest
+    container_name: aos-mem0
+    ports:
+      - "8000:8000"
+    environment:
+      - MEM0_API_KEY=${MEM0_API_KEY:-dummy-key-for-local}
+      - REDIS_URL=redis://redis:6379
+      - QDRANT_HOST=qdrant
+    depends_on:
+      - redis
+      - qdrant
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Qdrant vector store (required by Mem0)
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: aos-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  # Exo cluster (tensor-parallel inference)
+  exo:
+    image: exoai/exo:latest
+    container_name: aos-exo
+    ports:
+      - "8080:8080"
+    environment:
+      - EXO_HOST=0.0.0.0
+      - EXO_PORT=8080
+    volumes:
+      - exo-models:/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  redis-data:
+  mosquitto-data:
+  mosquitto-logs:
+  litellm-data:
+  qdrant-data:
+  exo-models:
+
+networks:
+  default:
+    name: aos-network
